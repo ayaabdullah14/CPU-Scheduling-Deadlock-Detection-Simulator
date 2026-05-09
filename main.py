@@ -463,12 +463,112 @@ def run_test_case(tc_num, quantum=10):
     round_robin_priority(processes, quantum)
 
 
+def load_test_cases_from_file(filename):
+    """
+    Parse test.txt into a dict of numbered test cases.
+
+    Expected format — each test case block looks like:
+        TEST CASE 1: Some Title
+        optional description line(s) (non-process lines)
+        1 0 1 CPU{10}
+        2 0 2 CPU{5}
+        (blank line separates cases)
+
+    Any line whose first token is an integer is treated as a process line.
+    Lines starting with '=' or '-' or 'TEST' are treated as headers/descriptions.
+    """
+    cases = {}
+    current_num   = None
+    current_name  = "Unnamed"
+    current_desc  = ""
+    current_lines = []
+
+    def save_case():
+        if current_num is not None and current_lines:
+            cases[str(current_num)] = {
+                "name":  current_name,
+                "desc":  current_desc.strip(),
+                "lines": list(current_lines),
+            }
+
+    with open(filename, "r") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("=") or line.startswith("-"):
+                continue
+
+            # Detect "TEST CASE N: Title" header
+            m = re.match(r"TEST\s+CASE\s+(\d+)\s*[:\-]?\s*(.*)", line, re.IGNORECASE)
+            if m:
+                save_case()
+                current_num   = int(m.group(1))
+                current_name  = m.group(2).strip() or f"Test Case {current_num}"
+                current_desc  = ""
+                current_lines = []
+                continue
+
+            # Process line: starts with an integer (the PID)
+            parts = line.split()
+            if parts and parts[0].lstrip('-').isdigit():
+                try:
+                    int(parts[0])
+                    current_lines.append(line)
+                    continue
+                except ValueError:
+                    pass
+
+            # Otherwise treat as description
+            if current_num is not None and not current_lines:
+                current_desc += " " + line
+
+    save_case()
+    return cases
+
+
+def run_file_test_case(tc, quantum=10):
+    """Run a single test case dict loaded from file."""
+    print("\n" + "=" * 60)
+    print(f"TEST CASE {tc.get('num','')}: {tc['name']}")
+    if tc['desc']:
+        print(f"  {tc['desc']}")
+    print("=" * 60)
+
+    processes = []
+    for line in tc["lines"]:
+        parts = line.strip().split()
+        if len(parts) < 4:
+            continue
+        try:
+            pid, arrival, priority = int(parts[0]), int(parts[1]), int(parts[2])
+        except ValueError:
+            continue
+        burst_str = " ".join(parts[3:])
+        p = Process(pid, arrival, priority)
+        p.steps = parse_steps(burst_str)
+        processes.append(p)
+
+    if not processes:
+        print("  (no valid process lines found)")
+        return
+
+    print("\nProcesses:")
+    for p in processes:
+        print(f"  P{p.pid}  arrival={p.arrival_time}  priority={p.priority}  steps={p.steps}")
+    print()
+
+    round_robin_priority(processes, quantum)
+
+
 def main():
     import sys
+    import os
 
-    quantum = 10
+    quantum   = 10
+    test_file = "test.txt"   # default test file name
 
-    # Run directly with a file: python3 main.py myfile.txt
+    # -----------------------------------------------------------------------
+    # python main.py somefile.txt  — run a plain process input file directly
+    # -----------------------------------------------------------------------
     if len(sys.argv) == 2 and not sys.argv[1].isdigit():
         filename = sys.argv[1]
         print(f"Reading from file: {filename}")
@@ -483,7 +583,9 @@ def main():
         round_robin_priority(processes, quantum)
         return
 
-    # Run a specific test case: python3 main.py 5
+    # -----------------------------------------------------------------------
+    # python main.py 5  — run built-in test case by number
+    # -----------------------------------------------------------------------
     if len(sys.argv) == 2 and sys.argv[1].isdigit():
         tc = sys.argv[1]
         if tc not in TEST_CASES:
@@ -492,15 +594,57 @@ def main():
         run_test_case(tc, quantum)
         return
 
-    # Interactive menu
+    # -----------------------------------------------------------------------
+    # Interactive menu — load test cases from test.txt if it exists
+    # -----------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("  CPU SCHEDULING + DEADLOCK DETECTION SIMULATOR")
     print("=" * 60)
-    print("\nAvailable test cases:\n")
+
+    # Try to load test cases from test.txt
+    file_cases = {}
+    if os.path.exists(test_file):
+        try:
+            file_cases = load_test_cases_from_file(test_file)
+            for num, tc in file_cases.items():
+                tc['num'] = num
+        except Exception as e:
+            print(f"  (Warning: could not parse {test_file}: {e})")
+
+    if file_cases:
+        print(f"\nTest cases loaded from {test_file}:\n")
+        for num, tc in file_cases.items():
+            desc = f" — {tc['desc']}" if tc['desc'] else ""
+            print(f"  [{num}] {tc['name']}{desc}")
+        print()
+        print("Options:")
+        print("  [A] Run ALL test cases from file")
+        print("  [B] Use built-in test cases instead")
+        print("  [Q] Quit")
+        print()
+        choice = input("Select test case number / A / B / Q: ").strip().upper()
+
+        if choice == "Q":
+            return
+        elif choice == "A":
+            for num in sorted(file_cases.keys(), key=int):
+                run_file_test_case(file_cases[num], quantum)
+            return
+        elif choice == "B":
+            pass   # fall through to built-in menu below
+        elif choice in file_cases:
+            run_file_test_case(file_cases[choice], quantum)
+            return
+        else:
+            print(f"Invalid choice '{choice}'.")
+            return
+
+    # Built-in test cases menu
+    print("\nBuilt-in test cases:\n")
     for num, tc in TEST_CASES.items():
         print(f"  [{num}] {tc['name']}")
         print(f"       {tc['desc']}")
-    print(f"  [A] Run ALL test cases")
+    print(f"  [A] Run ALL built-in test cases")
     print(f"  [Q] Quit")
     print()
 
