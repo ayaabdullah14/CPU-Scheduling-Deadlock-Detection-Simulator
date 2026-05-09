@@ -1,0 +1,278 @@
+import re
+from collections import deque
+from copy import deepcopy
+
+# Burst class
+class Burst:
+    def __init__(self, burst_string, burst_type=None, resources=None, duration=None):
+        self.burst_string = burst_string
+        self.burst_type = burst_type
+        self.resources = resources or {"R": [], "F": []}
+        self.duration = duration
+
+    def __repr__(self):
+        return self.burst_string
+
+# Process class
+class Process:
+    def __init__(self, pid, arrival_time=None, priority=None):
+        self.pid = pid
+        self.arrival_time = arrival_time
+        self.priority = priority
+        self.bursts = []
+
+    def add_burst(self, burst):
+        self.bursts.append(burst)
+
+    def __repr__(self):
+        bursts_str = ", ".join(map(str, self.bursts))
+        return f"Process(pid={self.pid}, arrival={self.arrival_time}, priority={self.priority}, Bursts=[{bursts_str}])"
+
+# Function to parse input file
+def parse_input_file(filename):
+    processes = []
+    with open(filename, "r") as file:
+        for line in file:
+            line = line.strip()
+            if not line:
+                continue
+
+            parts = re.split(r'\s+', line)
+            if len(parts) < 4:
+                continue
+
+            try:
+                pid = int(parts[0])
+                arrival_time = int(parts[1])
+                priority = int(parts[2])
+                burst_str = " ".join(parts[3:])
+            except ValueError:
+                continue
+
+            process = Process(pid, arrival_time, priority)
+            bursts = parse_burst_data(burst_str)
+            if bursts:
+                process.bursts = bursts
+                processes.append(process)
+    return processes
+
+# Function to parse burst data
+def parse_burst_data(burst_str):
+    bursts = []
+    pattern = r"(CPU\{[^}]+\}|IO\{[^}]+\}|R\[[^\]]+\]|F\[[^\]]+\])"
+    matches = re.findall(pattern, burst_str)
+
+    for match in matches:
+        if match.startswith("CPU"):
+            duration_match = re.search(r"CPU\{(\d+)\}", match)
+            resources = {"R": [], "F": []}
+
+            resource_matches = re.findall(r"(R|F)\[([^\]]+)\]", match)
+            for r_type, r_value in resource_matches:
+                resources[r_type].append(r_value)
+
+            duration = int(duration_match.group(1)) if duration_match else 0
+            burst = Burst(match, burst_type="C", resources=resources, duration=duration)
+            bursts.append(burst)
+        elif match.startswith("IO"):
+            duration = int(match[match.find("{") + 1:match.find("}")])
+            burst = Burst(match, burst_type="I", duration=duration)
+            bursts.append(burst)
+        elif match.startswith("R"):
+            resource = match[match.find("[") + 1:match.find("]")]
+            burst = Burst(match, burst_type="R", resources={"R": [resource], "F": []})
+            bursts.append(burst)
+        elif match.startswith("F"):
+            resource = match[match.find("[") + 1:match.find("]")]
+            burst = Burst(match, burst_type="F", resources={"R": [], "F": [resource]})
+            bursts.append(burst)
+    return bursts
+
+# Deadlock detection function
+def detect_deadlock(processes, io_queue, remaining_bursts):
+    resource_allocation = {}
+    resource_request = {}
+
+    for process_index, bursts in enumerate(remaining_bursts):
+        if bursts and bursts[0].burst_type == "C":
+            burst = bursts[0]
+            for r in burst.resources["R"]:
+                resource_request.setdefault(r, set()).add(process_index)
+            for f in burst.resources["F"]:
+                resource_allocation.setdefault(f, None)
+                resource_allocation[f] = process_index
+
+    visited = set()
+    deadlock = set()
+
+    def has_cycle(process_index):
+        if process_index in visited:
+            return True
+        visited.add(process_index)
+        for resource, holder in resource_allocation.items():
+            if holder == process_index:
+                for requester in resource_request.get(resource, []):
+                    if requester not in visited and has_cycle(requester):
+                        deadlock.add(requester)
+                        return True
+        visited.remove(process_index)
+        return False
+
+    for process_index in range(len(processes)):
+        if has_cycle(process_index):
+            deadlock.add(process_index)
+            break
+
+    return list(deadlock) if deadlock else []
+
+# Deadlock recovery function
+def recover_from_deadlock(deadlocked_processes, remaining_bursts, io_queue, gantt_chart, current_time, processes, original_bursts):
+    if not deadlocked_processes:
+        return current_time, io_queue
+
+    # Select a process to terminate (e.g., lowest priority)
+    process_to_kill = min(deadlocked_processes, key=lambda x: processes[x].priority)
+    terminated_process = processes[process_to_kill]
+
+    # Log termination
+    gantt_chart.append((current_time, f"Process {terminated_process.pid} terminated for deadlock recovery", current_time + 1))
+    current_time += 1
+
+    # Reset the terminated process
+    remaining_bursts[process_to_kill] = deepcopy(original_bursts[process_to_kill])
+    io_queue = [io for io in io_queue if io[0] != process_to_kill]
+
+    gantt_chart.append((current_time, f"Process {terminated_process.pid} restarted", current_time + 1))
+    current_time += 1
+
+    return current_time, io_queue
+
+# Round Robin with Priority Scheduling and Deadlock Handling
+def round_robin_priority_with_deadlock(processes, quantum):
+    current_time = 0
+    ready_queue = deque()
+    io_queue = []
+    gantt_chart = []
+
+    original_bursts = [deepcopy(process.bursts) for process in processes]
+    remaining_bursts = [deepcopy(process.bursts) for process in processes]
+    completed_processes = set()
+
+    waiting_times = [0] * len(processes)
+    turnaround_times = [0] * len(processes)
+    start_times = [-1] * len(processes)
+    end_times = [-1] * len(processes)
+
+    while len(completed_processes) < len(processes):
+        for i, process in enumerate(processes):
+            if (
+                process.arrival_time <= current_time
+                and i not in completed_processes
+                and i not in ready_queue
+                and all(io_process[0] != i for io_process in io_queue)
+            ):
+                if start_times[i] == -1:
+                    start_times[i] = current_time
+                ready_queue.append(i)
+
+        deadlocked_processes = detect_deadlock(processes, io_queue, remaining_bursts)
+        if deadlocked_processes:
+            current_time, io_queue = recover_from_deadlock(
+                deadlocked_processes,
+                remaining_bursts,
+                io_queue,
+                gantt_chart,
+                current_time,
+                processes,
+                original_bursts,
+            )
+
+        for io_process in list(io_queue):
+            process_index, end_time = io_process
+            if current_time >= end_time:
+                io_queue.remove(io_process)
+                remaining_bursts[process_index].pop(0)
+                ready_queue.append(process_index)
+
+        if not ready_queue:
+            gantt_chart.append((current_time, "Idle", current_time + 1))
+            current_time += 1
+            continue
+
+        ready_queue = deque(sorted(ready_queue, key=lambda x: processes[x].priority))
+        process_index = ready_queue.popleft()
+        process = processes[process_index]
+
+        if not remaining_bursts[process_index]:
+            completed_processes.add(process_index)
+            end_times[process_index] = current_time
+            continue
+
+        burst = remaining_bursts[process_index][0]
+
+        if burst.burst_type == "C":
+            if burst.duration > quantum:
+                gantt_chart.append((current_time, f"P{process.pid}", current_time + quantum))
+                current_time += quantum
+                burst.duration -= quantum
+                ready_queue.append(process_index)
+            else:
+                gantt_chart.append((current_time, f"P{process.pid}", current_time + burst.duration))
+                current_time += burst.duration
+                remaining_bursts[process_index].pop(0)
+
+                for resource in burst.resources["R"]:
+                    gantt_chart.append((current_time, f"P{process.pid} requests R{resource}", current_time + 1))
+                    current_time += 1
+                for resource in burst.resources["F"]:
+                    gantt_chart.append((current_time, f"P{process.pid} releases R{resource}", current_time + 1))
+                    current_time += 1
+
+                if remaining_bursts[process_index]:
+                    next_burst = remaining_bursts[process_index][0]
+                    if next_burst.burst_type == "I":
+                        io_queue.append((process_index, current_time + next_burst.duration))
+
+        elif burst.burst_type == "I":
+            gantt_chart.append((current_time, f"P{process.pid}", current_time + burst.duration))
+            current_time += burst.duration
+            remaining_bursts[process_index].pop(0)
+
+        if not remaining_bursts[process_index]:
+            completed_processes.add(process_index)
+            end_times[process_index] = current_time
+
+    # Calculate waiting times and turnaround times
+    for i, process in enumerate(processes):
+        turnaround_times[i] = end_times[i] - process.arrival_time
+        cpu_burst_time = sum(burst.duration for burst in original_bursts[i] if burst.burst_type == "C")
+        io_burst_time = sum(burst.duration for burst in original_bursts[i] if burst.burst_type == "I")
+        waiting_times[i] = turnaround_times[i] - cpu_burst_time - io_burst_time
+
+    avg_waiting_time = sum(waiting_times) / len(processes)
+    avg_turnaround_time = sum(turnaround_times) / len(processes)
+
+    print("\nProcess Waiting Times and Turnaround Times:")
+    for i, process in enumerate(processes):
+        print(f"Process {process.pid}: Waiting Time = {waiting_times[i]}, Turnaround Time = {turnaround_times[i]}")
+
+    print(f"\nAverage Waiting Time: {avg_waiting_time}")
+    print(f"Average Turnaround Time: {avg_turnaround_time}")
+
+    return gantt_chart
+
+# Main function
+def main():
+    processes = parse_input_file("processes.txt")
+    print("Processes Information:")
+    for process in processes:
+        print(process)
+
+    gantt_chart = round_robin_priority_with_deadlock(processes, quantum=10)
+
+    print("\nGantt Chart:")
+    for entry in gantt_chart:
+        print(f"Time {entry[0]} to {entry[2]}: {entry[1]}")
+
+if __name__ == "__main__":
+    main()
