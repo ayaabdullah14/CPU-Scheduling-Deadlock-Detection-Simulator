@@ -567,10 +567,50 @@ def main():
     test_file = "test.txt"   # default test file name
 
     # -----------------------------------------------------------------------
-    # python main.py somefile.txt  — run a plain process input file directly
+    # python main.py somefile.txt  — auto-detect test case file or plain file
     # -----------------------------------------------------------------------
     if len(sys.argv) == 2 and not sys.argv[1].isdigit():
         filename = sys.argv[1]
+
+        # Check if the file contains TEST CASE headers
+        is_test_file = False
+        try:
+            with open(filename, "r") as fh:
+                for line in fh:
+                    if re.match(r"TEST\s+CASE\s+\d+", line.strip(), re.IGNORECASE):
+                        is_test_file = True
+                        break
+        except FileNotFoundError:
+            print(f"Error: file '{filename}' not found.")
+            return
+
+        if is_test_file:
+            file_cases = load_test_cases_from_file(filename)
+            for num, tc in file_cases.items():
+                tc['num'] = num
+
+            print(f"\nTest cases loaded from {filename}:\n")
+            for num, tc in file_cases.items():
+                desc = f" — {tc['desc']}" if tc['desc'] else ""
+                print(f"  [{num}] {tc['name']}{desc}")
+            print()
+            print("  [A] Run ALL test cases")
+            print("  [Q] Quit")
+            print()
+            choice = input("Select test case number / A / Q: ").strip().upper()
+
+            if choice == "Q":
+                return
+            elif choice == "A":
+                for num in sorted(file_cases.keys(), key=int):
+                    run_file_test_case(file_cases[num], quantum)
+            elif choice in file_cases:
+                run_file_test_case(file_cases[choice], quantum)
+            else:
+                print(f"Invalid choice '{choice}'.")
+            return
+
+        # Plain process file — run directly
         print(f"Reading from file: {filename}")
         processes = parse_input_file(filename)
         print("=" * 60)
