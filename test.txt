@@ -1,0 +1,31 @@
+TEST CASE 1: Priority Scheduling
+Expected: P1 runs first (priority 1), then P2 (priority 2), then P3 (priority 3)
+1 0 1 CPU{10}
+2 0 2 CPU{5}
+3 0 3 CPU{8}
+
+TEST CASE 2: Round Robin (equal priority, quantum=10)
+Expected: P1 and P2 share CPU in time slices of 10
+1 0 1 CPU{10,5,8}
+2 0 1 CPU{6,4}
+
+TEST CASE 3: I/O Burst Handling
+Expected: P1 executes CPU, goes to I/O, P2 runs meanwhile, P1 returns
+1 0 1 CPU{5} IO{4} CPU{3}
+2 2 1 CPU{4} IO{2} CPU{6}
+
+TEST CASE 4: Resource Allocation (No Deadlock)
+Expected: P1 and P2 use different resources, no conflict, both complete
+1 0 1 CPU{R[1],5,F[1]}
+2 0 2 CPU{R[2],4,F[2]}
+
+TEST CASE 5: Deadlock Detection & Recovery
+Expected: P1 holds R1 waits R2, P2 holds R2 waits R1, deadlock, P2 killed, P1 completes
+1 0 1 CPU{R[1],10,R[2],5,F[1],F[2]}
+2 0 2 CPU{R[2],10,R[1],5,F[2],F[1]}
+
+TEST CASE 6: Full System (Priority + Round Robin + I/O + Resources + Deadlock)
+Expected: P3 priority 0 runs first, P1 holds R1, P3 blocked on R1, P3 killed, P1 and P2 complete
+1 0 1 CPU{R[1],10,R[2],5,F[1],F[2]}
+2 2 2 CPU{5} IO{3} CPU{R[2],4,F[2]}
+3 4 0 CPU{8,R[1],6,F[1]}
